@@ -56,6 +56,26 @@ pub fn get_exported_interfaces(
         .collect()
 }
 
+/// Retrieves the exported interfaces from the resolved world.
+pub fn get_imported_interfaces(
+    resolve: &Resolve,
+    world_id: wit_parser::WorldId,
+) -> Vec<(wit_parser::PackageName, String)> {
+    resolve.worlds[world_id]
+        .imports
+        .iter()
+        .filter_map(|(_k, v)| match v {
+            wit_parser::WorldItem::Interface { id, .. } => {
+                let i = &resolve.interfaces[*id];
+                let pkg_id = i.package.unwrap();
+                let pkg = &resolve.packages[pkg_id];
+                Some((pkg.name.clone(), i.name.clone().unwrap_or_default()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn merge_dependecy_package(
     base_resolve_file: Option<&PathBuf>,
     dependency_resolve: &Resolve,

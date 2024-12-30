@@ -1,10 +1,14 @@
 use anyhow::Result;
 use clap::{Args, ValueEnum};
+use js_component_bindgen::{generate_types, TranspileOpts};
 use std::path::PathBuf;
 use tokio::fs;
 use wit_parser::Resolve;
 
-use crate::common::constants::{SPIN_DEPS_WIT_FILE_NAME, SPIN_WIT_DIRECTORY};
+use crate::common::{
+    constants::{SPIN_DEPS_WIT_FILE_NAME, SPIN_WIT_DIRECTORY},
+    wit::get_imported_interfaces,
+};
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum BindingsLanguage {
@@ -87,7 +91,55 @@ The expected file is {wit_path:?}"#
                 println!("Bindings generated for Rust in {0}. You need to add the `wit-bindgen` crate to your Rust Spin app - e.g., `cargo add wit-bindgen`", self.output.to_str().expect("Failed to parse output path"));
             }
             BindingsLanguage::Ts => {
-                todo!("generate ts")
+                let imported_interfaces = get_imported_interfaces(&resolve, world_id);
+
+                let files = generate_types(
+                    // This name does not matter as we are not going to use it
+                    "test".to_string(),
+                    resolve,
+                    world_id,
+                    TranspileOpts {
+                        name: self.output.to_str().unwrap().to_string(),
+                        no_typescript: false,
+                        instantiation: None,
+                        import_bindings: None,
+                        map: None,
+                        no_nodejs_compat: false,
+                        base64_cutoff: 0,
+                        tla_compat: false,
+                        valid_lifting_optimization: false,
+                        tracing: false,
+                        no_namespaced_exports: false,
+                        multi_memory: true,
+                        guest: true,
+                    },
+                )?;
+
+                for (name, contents) in files.iter() {
+                    let output_path = self.output.join(name);
+                    if !output_path.to_str().unwrap().contains("/interfaces/") {
+                        //     // Skip non-interface files
+                        continue;
+                    }
+                    // Create parent directories if they don't exist
+                    if let Some(parent) = output_path.parent() {
+                        fs::create_dir_all(parent).await?;
+                    }
+                    fs::write(output_path, contents).await?;
+                }
+
+                println!(
+                    "Bindings generated for TypeScript in {0}.",
+                    self.output.to_str().expect("Failed to parse output path")
+                );
+                println!("\nMake sure to add the following interfaces to webpack as externals");
+                for (pkg_name, interface) in imported_interfaces {
+                    println!("  - {0}/{1}", pkg_name, interface);
+                }
+
+                println!("\nupdate `knitwit.json` for \"{}\" to include dependency components. You would need to add the following fields:", self.component_id);
+                println!("  - `project.worlds` array needs to contain `deps` as one of the worlds");
+                println!("  - `project.witPaths` array needs to contain the relative path to `<root of spin app>/.wit/components/{}`:", self.component_id);
             }
         }
 

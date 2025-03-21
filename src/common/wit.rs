@@ -14,7 +14,8 @@ pub fn resolve_to_wit(resolve: &Resolve, package_id: PackageId) -> Result<String
         .filter(|id| *id != package_id)
         .collect::<Vec<_>>();
 
-    printer.print(resolve, package_id, &ids)
+    printer.print(resolve, package_id, &ids)?;
+    Ok(printer.output.to_string())
 }
 
 pub fn parse_component_bytes(bytes: Vec<u8>) -> Result<(Resolve, PackageId)> {

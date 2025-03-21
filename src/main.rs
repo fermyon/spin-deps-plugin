@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod common;
 mod language;
-use commands::{add::AddCommand, bindings::GenerateBindingsCommand, publish::PublishCommand};
+use commands::{add::AddCommand, publish::PublishCommand};
 
 /// Main CLI structure for command-line argument parsing.
 #[derive(Parser)]
@@ -19,8 +19,6 @@ struct Cli {
 enum Commands {
     /// Add a new component dependency
     Add(AddCommand),
-    /// Generates dependency bindings for selected component
-    GenerateBindings(GenerateBindingsCommand),
 
     /// Publish dependency to a compatible registry
     Publish(PublishCommand),
@@ -32,7 +30,6 @@ async fn main() -> Result<()> {
 
     match app.command {
         Commands::Add(cmd) => cmd.run().await?,
-        Commands::GenerateBindings(cmd) => cmd.run().await?,
         Commands::Publish(cmd) => cmd.run().await?,
     }
 

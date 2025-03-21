@@ -19,15 +19,17 @@ tokio = { version = "1.40.0", features = ["full"] }
 toml = "0.8.19"
 toml_edit = "0.22.21"
 url = "2.5.2"
-wasmparser = { git = "https://github.com/bytecodealliance/wasm-tools" }
-wit-component = { git = "https://github.com/bytecodealliance/wasm-tools" }
-wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools" }
+wasmparser = "0.227.1"
+wit-component = "0.227.1"
+wit-parser = "0.227.1"
 futures = "0.3.30"
-semver = "1.0.23"
-wit-bindgen-rust = { git = "https://github.com/fibonacci1729/wit-bindgen", branch = "deps" }
-wit-bindgen-core = { git = "https://github.com/fibonacci1729/wit-bindgen", branch = "deps" }
+semver = "1.0.25"
+wit-bindgen-rust = "0.41.0"
+wit-bindgen-core = "0.41.0"
 wasm-pkg-common = "0.5.1"
 wasm-pkg-client = "0.5.1"
+js-component-bindgen = { git = "https://github.com/bytecodealliance/jco", rev = "48c1a3c91a9c71d35aedc9572e180ce67ca3a4f5" }
+convert_case = "0.8.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # This needs to be an explicit dependency to enable

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
+use convert_case::{Case, Casing};
 use http::HttpAddCommand;
 use local::LocalAddCommand;
 use registry::RegistryAddCommand;
@@ -25,6 +26,7 @@ use crate::common::{
     paths::fs_safe_segment,
     wit::{get_exported_interfaces, parse_component_bytes, resolve_to_wit},
 };
+use js_component_bindgen::{generate_types, TranspileOpts};
 
 mod http;
 mod local;
@@ -198,6 +200,7 @@ impl AddCommand {
                 root_dir,
                 target_component,
                 package_name: package,
+                resolve: &resolve,
                 interfaces: &interfaces,
                 rel_wit_path: &output_wit_path,
             };
@@ -402,6 +405,7 @@ struct BindOMatic<'a> {
     root_dir: &'a Path,
     target_component: &'a spin_manifest::schema::v2::Component,
     package_name: &'a wit_parser::PackageName,
+    resolve: &'a wit_parser::Resolve,
     interfaces: &'a [String],
     rel_wit_path: &'a Path,
 }
@@ -457,8 +461,167 @@ async fn try_generate_bindings<'a>(target: &'a BindOMatic<'a>) -> anyhow::Result
             )
             .await
         }
-        Language::TypeScript { package_json: _ } => todo!(),
+        Language::TypeScript { package_json: _ } => {
+            generate_ts_bindings(
+                target.root_dir,
+                target.package_name,
+                &mut target.resolve.clone(),
+            )
+            .await
+        }
     }
+}
+
+async fn generate_ts_bindings(
+    root_dir: &Path,
+    package_name: &wit_parser::PackageName,
+    resolve: &mut Resolve,
+) -> anyhow::Result<()> {
+    println!(
+        "Generating TypeScript bindings for {}/{}",
+        package_name.namespace, package_name.name
+    );
+
+    let package_name_str = if let Some(v) = &package_name.version {
+        format!(
+            "@spin-deps/{}-{}@{}",
+            package_name.namespace, package_name.name, v
+        )
+    } else {
+        format!(
+            "@spin-deps/{}-{}",
+            package_name.namespace, package_name.name
+        )
+    };
+
+    let package_id = resolve
+        .packages
+        .iter()
+        .find(|(_, p)| &p.name.to_string() == "root:component")
+        .unwrap()
+        .0;
+
+    let world_id = resolve.select_world(package_id, Some("root"))?;
+
+    let out_world_name = &package_name
+        .to_string()
+        .replace("_", "-")
+        .replace(":", "-")
+        .replace("@", "")
+        .replace("/", "-");
+
+    resolve.importize(world_id, Some(out_world_name.clone()))?;
+    let out_world_id = resolve.select_world(package_id, Some(&out_world_name))?;
+
+    // Create a new directory within the spin component working directory
+    let package_dir = root_dir.join(&package_name_str);
+    fs::create_dir_all(&package_dir).await?;
+
+    // add a package.json file
+    let package_json = package_dir.join("package.json");
+    let package_json_content = package_json_content(&package_name_str, &out_world_name);
+    fs::write(&package_json, package_json_content)
+        .await
+        .context("no package json file")?;
+    // create tsconfig
+    let tsconfig = package_dir.join("tsconfig.json");
+    let tsconfig_content = tsconfig_content();
+    fs::write(&tsconfig, tsconfig_content)
+        .await
+        .context("no tsconfig file")?;
+    // write the wit from the resolve in wit/world.wit
+    let world_wit = package_dir.join("wit/world.wit");
+    // create if not exist
+    fs::create_dir_all(world_wit.parent().unwrap()).await?;
+    let world_wit_text = resolve_to_wit(resolve, package_id).context("failed to resolve to wit")?;
+    fs::write(&world_wit, world_wit_text)
+        .await
+        .context("No wit folder")?;
+
+    let files = generate_types(
+        // This name does not matter as we are not going to use it
+        "test",
+        resolve.clone(),
+        world_id,
+        TranspileOpts {
+            name: package_name_str.clone(),
+            no_typescript: false,
+            instantiation: None,
+            import_bindings: None,
+            map: None,
+            no_nodejs_compat: false,
+            base64_cutoff: 0,
+            async_mode: None,
+            tla_compat: false,
+            valid_lifting_optimization: false,
+            tracing: false,
+            no_namespaced_exports: false,
+            multi_memory: true,
+            guest: true,
+        },
+    )?;
+
+    for (name, contents) in files.iter() {
+        let output_path = package_dir.join("types").join(name);
+        // Create parent directories if they don't exist
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(output_path, contents).await?;
+    }
+    // for all interface names in interfaces, import and re-export them in a index.js file
+    let mut re_exports: Vec<String> = Vec::new();
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    for (_, item) in resolve.worlds[out_world_id].imports.iter() {
+        match item {
+            wit_parser::WorldItem::Interface { id, stability: _ } => {
+                let iface = &resolve.interfaces[*id];
+
+                let iface_name = &iface.name.clone().unwrap().to_case(Case::Camel);
+                let package = &resolve.packages[iface.package.unwrap()];
+                // Only handle interfaces from the package we are generating bindings for
+                if package.name != *package_name {
+                    continue;
+                }
+
+                // Track names to detect collision
+                let count = name_counts.entry(iface_name.clone()).or_insert(0);
+                *count += 1;
+
+                let final_name = if *count > 1 {
+                    format!("{}{}", package_name, iface_name)
+                } else {
+                    iface_name.clone()
+                };
+
+                let import_path = qualified_itf_name(&package.name, &iface.name.clone().unwrap());
+
+                re_exports.push(format!(
+                    "import * as {} from '{}';",
+                    final_name, import_path
+                ));
+                re_exports.push(format!("export {{ {} }};", final_name));
+
+                println!("import * as {} from '{}';", final_name, import_path);
+                println!("export {{ {} }};", final_name);
+            }
+            // TODO: spin deps itself does not importing functions
+            wit_parser::WorldItem::Function(_) => {}
+            // Types are not generated by the TypeScript bindings generator
+            wit_parser::WorldItem::Type(_) => {}
+        }
+    }
+    let index_js = package_dir.join("index.js");
+    fs::write(&index_js, re_exports.join("\n")).await?;
+
+    println!("TypeScript bindings generated successfully");
+    println!(
+        "To use the component, run:\ncd {}\n npm install ./{}",
+        root_dir.to_string_lossy(),
+        package_name
+    );
+
+    Ok(())
 }
 
 async fn generate_rust_bindings(
@@ -555,4 +718,51 @@ async fn generate_rust_bindings(
     }
 
     Ok(())
+}
+
+fn package_json_content(package_name: &str, world: &str) -> String {
+    format!(
+        r#"{{
+    "name": "{package_name}",
+    "version": "0.1.0",
+    "description": "Generated Package for {package_name}",
+    "main": "index.js",
+    "scripts": {{
+    }},
+    "author": "",
+    "license": "ISC",
+    "config": {{
+        "witDeps": 
+        [
+            {{
+            "witPath": "./wit",
+            "package": "root:component",
+            "world": "{world}"
+            }}
+        ]
+    }}
+}}"#
+    )
+}
+
+fn tsconfig_content() -> String {
+    r#"{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "ES2020",
+        "lib": [
+            "ES2020"
+        ],
+        "moduleResolution": "node",
+        "declaration": true,
+        "outDir": "dist",
+        "strict": true,
+        "esModuleInterop": true,
+    },
+    "exclude": [
+        "node_modules",
+        "dist"
+    ]
+}"#
+    .to_owned()
 }
